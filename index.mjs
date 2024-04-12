@@ -65,6 +65,8 @@ async function register(token, events) {
         let relayTag = event.tags
             .find(tag => tag[0] == "relay" && tag.length > 1)
 
+        console.log(tokenTag)
+
         if (tokenTag && veryOk) {
             let keyExist = await checkIfPubKeyExists(event.pubkey)
 
@@ -103,11 +105,11 @@ async function register(token, events) {
 async function notify(event, relay) {
     let pubkeyTag = event.tags.find(tag => tag[0] == "p" && tag.length > 1)
     if (pubkeyTag && pubkeyTag[1]) {
-        console.log("New kind", event.kind, "event for", pubkeyTag[1])
+        console.log("New kind", event.kind, "event for", pubkeyTag[1], "event id", event.id)
 
         let tokens = await getTokensByPubKey(pubkeyTag[1])
         let tokensAsUrls = tokens.filter(isValidUrl)
-        let firebaseTokens = tokens.filter(item => !tokensAsUrls.includes(item))
+        let firebaseTokens = tokens.filter(item => !tokensAsUrls.includes(item) && !!item)
 
         if (tokens.length > 0) {
             const stringifiedWrappedEventToPush = JSON.stringify(createWrap(pubkeyTag[1], event))
@@ -118,11 +120,12 @@ async function notify(event, relay) {
                     const currentServer = urlWithTopic.origin
                     const currentTopic = urlWithTopic.pathname.substring(1)
 
-                    await ntfyPublish({
+                    const response = await ntfyPublish({
                         server: currentServer,
                         topic: currentTopic,
                         message: stringifiedWrappedEventToPush
                     })
+                    console.log(response)
                 });
                 console.log("NTFY New kind", event.kind, "event for", pubkeyTag[1], "with", stringifiedWrappedEventToPush.length, "bytes")
             }
@@ -161,7 +164,6 @@ function isValidUrl(string) {
     try {
         givenURL = new URL(string);
     } catch (error) {
-      //console.log("error is",error)
         return false;  
     }
     return givenURL.protocol === "http:" || givenURL.protocol === "https:";
@@ -187,7 +189,7 @@ async function restartRelayPool() {
     relayPool.on('open', relay => {
         relay.subscribe("subid", 
             {
-                kinds: [4, 9735, 1059],
+                kinds: [24133],
                 limit: 1
             }
         )
@@ -222,7 +224,7 @@ async function restartRelaySubs() {
 
     relayPool.subscribe("subid", 
         {
-            kinds: [4, 9735, 1059],
+            kinds: [24133],
             limit: 1
         }
     );
