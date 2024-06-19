@@ -61,6 +61,17 @@ export async function getAllRelays() {
 }
 
 export async function registerInDatabase(pubkey, relay, token) {
+    if (!token) {
+        return
+    }
+    if (!relay) {
+        return
+    }
+    if (relay.includes("127.0.0.1") || relay.includes("localhost") || relay.includes("192.168") || relay == "wss://nsec.app") {
+        return
+    }
+
+
     pgPool.query(
         `INSERT INTO subscriptions (PUB_KEY, RELAY, TOKEN) 
          VALUES ($1, $2, $3) 
