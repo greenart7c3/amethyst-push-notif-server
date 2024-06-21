@@ -49,6 +49,8 @@ export async function getAllRelays() {
     for (let row of result.rows) {
         if (
             !row.relay.includes("127.0.0.") 
+            && !row.relay.includes("localhost")
+            && !row.relay.includes("192.168")
             && !row.relay.includes("//umbrel:")
             && !row.relay.includes("wss://wss:")
             && !row.relay.includes("weixin")
