@@ -200,7 +200,7 @@ async function restartRelayPool() {
     });
     
     relayPool.on('event', (relay, sub_id, ev) => {
-        console.log("new event", ev)
+console.log("new event", ev)
         if (sentCache.has(ev.id)) return
         sentCache.set(ev.id, ev.id)
 
@@ -255,4 +255,7 @@ function createWrap(recipientPubkey, event, tags = []) {
 
 restartRelayPool()
 
-setInterval(restartRelayPool, 1000 * 60 * 60);
+setInterval(function() {
+    console.log("restarted pool after 1 hour")
+    restartRelayPool()
+}, 1000 * 60 * 60);
