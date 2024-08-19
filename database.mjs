@@ -1,4 +1,5 @@
 import { pgPool } from './database-config.mjs'
+import format from 'pg-format'
 
 export async function getTokensByPubKey(pubkey) {
     const result = await pgPool.query(
@@ -36,9 +37,9 @@ export async function getAllKeys() {
 
 export async function getAllRelays() {
     const result = await pgPool.query(
-        `SELECT rtrim(RELAY,'/') AS relay, COUNT(*) AS votes
+        `SELECT RTRIM(TRIM(RELAY),'/') AS relay, COUNT(*) AS votes
         FROM subscriptions 
-        group by relay
+        group by RTRIM(TRIM(RELAY),'/')
         order by votes desc
         `
     )
@@ -47,46 +48,45 @@ export async function getAllRelays() {
 
     let relays = []
     for (let row of result.rows) {
-        if (
-            !row.relay.includes("127.0.0.") 
-            && !row.relay.includes("localhost")
-            && !row.relay.includes("192.168")
-            && !row.relay.includes("//umbrel:")
-            && !row.relay.includes("wss://wss:")
-            && !row.relay.includes("weixin")
-            && !row.relay.includes("brb.io") // too many bugs
-        ) {
-            relays.push(row.relay)
-        }
+        relays.push(row.relay)
     }
     return relays
 }
 
-export async function registerInDatabase(pubkey, relay, token) {
-    if (!token) {
-        return
+export async function registerInDatabase(pubkey, relays, token) {
+    for (let relay of relays) {
+        pgPool.query(
+            `INSERT INTO subscriptions (PUB_KEY, RELAY, TOKEN) 
+            VALUES ($1, $2, $3) 
+            ON CONFLICT (PUB_KEY, RELAY, TOKEN) 
+            DO NOTHING;
+            `,
+            [pubkey, relay || null, token],
+            (err, res) => {
+                if (err) {
+                    console.log("Database Insert: " + err)
+                }
+            }
+        )
     }
-    if (!relay) {
-        return
-    }
-    if (relay.includes("127.0.0.1") || relay.includes("localhost") || relay.includes("192.168") || relay == "wss://nsec.app") {
-        return
-    }
+}
 
-
+export async function registerInDatabaseTuples(pubkeyRelaysTokenTuples) {
     pgPool.query(
-        `INSERT INTO subscriptions (PUB_KEY, RELAY, TOKEN) 
-         VALUES ($1, $2, $3) 
-         ON CONFLICT (PUB_KEY, RELAY, TOKEN) 
-         DO NOTHING;
-        `,
-        [pubkey, relay || null, token],
+        format(
+            `INSERT INTO subscriptions (PUB_KEY, RELAY, TOKEN) 
+            VALUES %L 
+            ON CONFLICT (PUB_KEY, RELAY, TOKEN) 
+            DO NOTHING;
+            `, pubkeyRelaysTokenTuples
+        ),
+        [],
         (err, res) => {
             if (err) {
-                console.log("Database Insert: " + err)
+                console.log("Multi Database Insert: " + err)
             }
         }
-      )
+    )
 }
 
 export async function deleteToken(token) {
@@ -97,10 +97,27 @@ export async function deleteToken(token) {
         [token],
         (err, res) => {
             if (err) {
-                console.log("Database Insert: " + err)
+                console.log("Delete Token Error: " + err)
             }
             if (res) {
                 console.log("Token Deleted: " + token)
+            }
+        }
+      )
+}
+
+export async function deleteRelay(relayUrl) {
+    pgPool.query(
+        `DELETE from subscriptions 
+         WHERE rtrim(TRIM(RELAY),'/') = $1
+        `,
+        [relayUrl],
+        (err, res) => {
+            if (err) {
+                console.log("Delete Relay Error: " + err)
+            }
+            if (res) {
+                console.log("Relay Deleted: " + relayUrl)
             }
         }
       )
@@ -131,4 +148,21 @@ export async function checkIfRelayExists(relay) {
 
     if (!result || !result.rows || !result.rows.length) return [];
     return result.rows[0].instances && result.rows[0].instances > 0
+}
+
+export async function checkIfThereIsANewRelay(relayList) {
+    const result = await pgPool.query(
+        format(
+            `VALUES %L
+            EXCEPT ALL 
+            SELECT RELAY from subscriptions
+            `,
+            relayList.map( url => [url])
+        ),
+        []
+    );
+
+    if (!result || !result.rows || !result.rows.length) return false;
+
+    return result.rows.length > 0
 }

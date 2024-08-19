@@ -1,19 +1,20 @@
 import express from 'express'
 import bodyparser from 'body-parser'
 import { admin } from './firebase-config.js'
-import { verifySignature, nip44, generatePrivateKey, getPublicKey, getEventHash, getSignature } from 'nostr-tools'
-import { RelayPool } from 'nostr'
+import { nip44 } from 'nostr-tools'
+import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools/pure'
+import { RelayPool } from './relay-pool.js'
 import { LRUCache } from 'lru-cache'
 import ntfyPublish, { DEFAULT_PRIORITY } from '@cityssm/ntfy-publish'
 
 import { 
-    registerInDatabase, 
+    registerInDatabaseTuples, 
     getAllKeys, 
     getAllRelays, 
     getTokensByPubKey, 
     deleteToken,
-    checkIfPubKeyExists, 
-    checkIfRelayExists 
+    deleteRelay,
+    checkIfThereIsANewRelay
 } from './database.mjs'
 
 const app = express()
@@ -36,10 +37,7 @@ const sentCache = new LRUCache(
 )
 
 app.post('/register', (req, res) => {
-    const token = req.body.token
-    const events = req.body.events
-
-    register(token, events).then((processed) => {
+    register(req.body.token, req.body.events).then((processed) => {
         res.status(200).send(processed)
     });
 })
@@ -48,54 +46,77 @@ app.listen(port, () => {
     console.log("Listening to port" + port)
 })
 
+function isValidUrl(urlString) {
+    try { 
+        return Boolean(new URL(urlString)); 
+    }
+    catch(e){ 
+        return false; 
+    }
+}
+
+function isSupportedUrl(url) {
+    return url &&
+        !url.includes("brb.io") && // no broken relays
+        !url.includes("echo.websocket.org") && // test relay
+        !url.includes("127.0") && // no local relays
+        !url.includes("umbrel.local") && // no local relays
+        !url.includes("192.168.") && // no local relays
+        !url.includes(".onion") && // we are not running on Tor
+        !url.includes("https://") && // not a websocket
+        !url.includes("http://") && // not a websocket
+        !url.includes("www://") && // not a websocket
+        !url.includes("https//") && // not a websocket
+        !url.includes("http//") && // not a websocket
+        !url.includes("www//") && // not a websocket
+        !url.includes("npub1") && // does not allow custom uris
+        !url.includes("was://") &&  // common mispellings
+        !url.includes("ws://umbrel:") &&  // local domain
+        !url.includes("\t") &&  // tab is not allowed
+        !url.includes(" ") && // space is not allowed
+        isValidUrl(url)
+}
+
 // -- registering tokens with pubkeys. 
 
 async function register(token, events) {
     let processed = []
 
-    let newPubKeys = false
+    //let newPubKeys = false
     let newRelays = false
 
     for (const event of events) {
-        let veryOk = verifySignature(event)
+        let veryOk = verifyEvent(event)
         
         let tokenTag = event.tags
             .find(tag => tag[0] == "challenge" && tag.length > 1)
 
-        let relayTag = event.tags
-            .find(tag => tag[0] == "relay" && tag.length > 1)
+        let relayTags = event.tags
+            .filter(tag => tag[0] == "relay" && tag.length > 1 && tag[1].length > 1 && isSupportedUrl(tag[1]))
+            .map(tag => tag[1])
+            .filter(function (value, index, array) { 
+              // remove duplicates 
+              return array.indexOf(value) === index;
+            })
 
-        console.log(tokenTag)
+        if (tokenTag[1] && veryOk && relayTags.length > 0) {
+            newRelays = await checkIfThereIsANewRelay(relayTags)
 
-        if (tokenTag && veryOk) {
-            let keyExist = await checkIfPubKeyExists(event.pubkey)
-
-            if (!keyExist) {
-                newPubKeys = true
-            }
-
-            let relayExist = await checkIfRelayExists(relayTag[1])
-            
-            if (!relayExist) {
-                newRelays = true
-            }
-
-            await registerInDatabase(event.pubkey,relayTag[1],tokenTag[1])
-        }    
+            await registerInDatabaseTuples(relayTags.map(relayUrl => [event.pubkey,relayUrl || null,tokenTag[1]]))
+        } else {
+            console.log("Invalid registration", veryOk, tokenTag, relayTags)
+        }
 
         processed.push(
             {
                 "pubkey": event.pubkey,
-                "added": veryOk
+                "added": tokenTag && veryOk && relayTags.length > 0
             }
         )
     }
 
     if (newRelays)
         restartRelayPool()
-    else if (newPubKeys) {
-        restartRelaySubs()
-    } 
 
     return processed
 }
@@ -105,11 +126,11 @@ async function register(token, events) {
 async function notify(event, relay) {
     let pubkeyTag = event.tags.find(tag => tag[0] == "p" && tag.length > 1)
     if (pubkeyTag && pubkeyTag[1]) {
-        console.log("New kind", event.kind, "event for", pubkeyTag[1], "event id", event.id)
+        //console.log("New kind", event.kind, "event for", pubkeyTag[1])
 
         let tokens = await getTokensByPubKey(pubkeyTag[1])
-        let tokensAsUrls = tokens.filter(isValidUrl)
-        let firebaseTokens = tokens.filter(item => !tokensAsUrls.includes(item) && !!item)
+        let tokensAsUrls = tokens.filter(isValidHttpUrl)
+        let firebaseTokens = tokens.filter(item => !tokensAsUrls.includes(item))
 
         if (tokens.length > 0) {
             const stringifiedWrappedEventToPush = JSON.stringify(createWrap(pubkeyTag[1], event))
@@ -120,12 +141,15 @@ async function notify(event, relay) {
                     const currentServer = urlWithTopic.origin
                     const currentTopic = urlWithTopic.pathname.substring(1)
 
-                    const response = await ntfyPublish({
-                        server: currentServer,
-                        topic: currentTopic,
-                        message: stringifiedWrappedEventToPush
-                    })
-                    console.log(response)
+                    try {
+                        await ntfyPublish({
+                            server: currentServer,
+                            topic: currentTopic,
+                            message: stringifiedWrappedEventToPush
+                        })
+                    } catch(e) {
+                        deleteToken(tokenUrl)
+                    }
                 });
                 console.log("NTFY New kind", event.kind, "event for", pubkeyTag[1], "with", stringifiedWrappedEventToPush.length, "bytes")
             }
@@ -153,12 +177,12 @@ async function notify(event, relay) {
                 });   
                 
                 console.log("Firebase New kind", event.kind, "event for", pubkeyTag[1], "with", stringifiedWrappedEventToPush.length, "bytes")
-            }            
-        } 
+            }
+        }
     }
 }
 
-function isValidUrl(string) {
+function isValidHttpUrl(string) {
     let givenURL;
 
     try {
@@ -170,7 +194,6 @@ function isValidUrl(string) {
   }
 
 var isInRelayPollFunction = false
-
 
 // -- relay connection
 async function restartRelayPool() {
@@ -208,49 +231,38 @@ console.log("new event", ev)
     });
 
     relayPool.on('error', (relay, e) => {
-		console.log("Error", relay.url, e.message)
+        if (
+            !isSupportedUrl(relay.url)
+            || e.message.includes("Invalid URL")
+            || e.message.includes("ECONNREFUSED")
+            || e.message.includes("Invalid WebSocket frame: FIN must be set")
+            || e.message.includes("The URL's protocol must be one of")
+        ) {
+            relayPool.remove(relay.url)
+            deleteRelay(relay.url)
+        } 
+
+		//console.log("Error", relay.url, e.message)
 	})
 
     console.log("Restarted pool with", relays.length, "relays and", keys.length, "keys")
     isInRelayPollFunction = false
 }
 
-var isInSubRestartFunction = false
-
-async function restartRelaySubs() {
-    if (isInSubRestartFunction) return 
-    isInSubRestartFunction = true
-
-    let keys = await getAllKeys()
-
-    relayPool.subscribe("subid", 
-        {
-            kinds: [24133],
-            limit: 1
-        }
-    );
-
-    console.log("Restarted subs with", keys.length, "keys")
-    isInSubRestartFunction = false
-}
-
 function createWrap(recipientPubkey, event, tags = []) {
-    const wrapperPrivkey = generatePrivateKey()
-    const key = nip44.getSharedSecret(wrapperPrivkey, recipientPubkey)
-    const content = nip44.encrypt(key, JSON.stringify(event))
+    const wrapperPrivkey = generateSecretKey()
   
-    const wrap = {
-      tags,
-      content,
+    const wrapTemplate = {
       kind: 1059,
-      created_at: Date.now(),
-      pubkey: getPublicKey(wrapperPrivkey),
+      created_at: Math.floor(Date.now() / 1000),
+      tags: tags,
+      content: nip44.encrypt(
+        JSON.stringify(event), 
+        nip44.getConversationKey(wrapperPrivkey, recipientPubkey)
+      )
     } 
-  
-    wrap.id = getEventHash(wrap)
-    wrap.sig = getSignature(wrap, wrapperPrivkey)
-  
-    return wrap
+
+    return finalizeEvent(wrapTemplate, wrapperPrivkey)
   }
 
 restartRelayPool()
