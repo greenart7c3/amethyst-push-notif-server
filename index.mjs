@@ -5,7 +5,7 @@ import { nip44 } from 'nostr-tools'
 import { finalizeEvent, generateSecretKey, verifyEvent } from 'nostr-tools/pure'
 import { RelayPool } from './relay-pool.js'
 import { LRUCache } from 'lru-cache'
-import ntfyPublish, { DEFAULT_PRIORITY } from '@cityssm/ntfy-publish'
+import ntfyPublish from '@cityssm/ntfy-publish'
 
 import { 
     registerInDatabaseTuples, 
@@ -141,15 +141,16 @@ async function notify(event, relay) {
                     const currentServer = urlWithTopic.origin
                     const currentTopic = urlWithTopic.pathname.substring(1)
 
-                    try {
-                        await ntfyPublish({
-                            server: currentServer,
-                            topic: currentTopic,
-                            message: stringifiedWrappedEventToPush
-                        })
-                    } catch(e) {
-                        deleteToken(tokenUrl)
-                    }
+                    ntfyPublish({
+                        server: currentServer,
+                        topic: currentTopic,
+                        message: stringifiedWrappedEventToPush
+                    }).then((processed) => {
+                        if (!processed)
+                            deleteToken(tokenUrl)
+                    }).catch(err => {
+                        console.log("Error posting to NTFY", tokenUrl, err)
+                    })
                 });
                 console.log("NTFY New kind", event.kind, "event for", pubkeyTag[1], "with", stringifiedWrappedEventToPush.length, "bytes")
             }
@@ -223,11 +224,14 @@ async function restartRelayPool() {
     });
     
     relayPool.on('event', (relay, sub_id, ev) => {
-console.log("new event", ev)
-        if (sentCache.has(ev.id)) return
-        sentCache.set(ev.id, ev.id)
-
-        notify(ev, relay)
+        try {
+            if (sentCache.has(ev.id)) return
+            sentCache.set(ev.id, ev.id)
+    
+            notify(ev, relay)
+        } catch (e) {
+            console.log(relay, ev, e)
+        }
     });
 
     relayPool.on('error', (relay, e) => {
