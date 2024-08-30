@@ -266,8 +266,3 @@ function createWrap(recipientPubkey, event, tags = []) {
   }
 
 restartRelayPool()
-
-setInterval(function() {
-    console.log("restarted pool after 1 hour")
-    restartRelayPool()
-}, 1000 * 60 * 60);
