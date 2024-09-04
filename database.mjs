@@ -83,7 +83,13 @@ export async function registerInDatabaseTuples(pubkeyRelaysTokenTuples) {
         [],
         (err, res) => {
             if (err) {
-                console.log("Multi Database Insert: " + err)
+                let tokenSize = 0
+                try {
+                    tokenSize = pubkeyRelaysTokenTuples[2].length
+                } catch (error) {
+                    tokenSize = 0
+                }
+                console.log("${tokenSize} Multi Database Insert: " + err)
             }
         }
     )
