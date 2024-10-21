@@ -42,7 +42,7 @@ function init_websocket(me) {
 		const ws = me.ws = new WS(me.url, undefined, {
 			followRedirects: true,
 			headers: {
-			  "User-Agent": "Amethyst Push Server"
+			  "User-Agent": "Amber Push Server"
 			}
 		});
 
