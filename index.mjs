@@ -85,6 +85,7 @@ async function register(token, events) {
     let newRelays = false
 
     for (const event of events) {
+	console.log("registering user ${event.pubkey}")    
         let veryOk = verifyEvent(event)
         
         let tokenTag = event.tags
