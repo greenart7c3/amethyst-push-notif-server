@@ -79,14 +79,14 @@ function isSupportedUrl(url) {
 // -- registering tokens with pubkeys. 
 
 async function register(token, events) {
-    console.log("registering", "events ${events}") 
+    console.log("registering", `events ${events} token ${token}`) 
     let processed = []
 
     //let newPubKeys = false
     let newRelays = false
 
     for (const event of events) {
-	console.log("registering", "new user ${event.pubkey}")    
+	console.log("registering", `new user ${event.pubkey}`)    
         let veryOk = verifyEvent(event)
         
         let tokenTag = event.tags
